@@ -9,14 +9,37 @@ use winit::{
 };
 use wry::{raw_window_handle::HasRawWindowHandle, WebView, WebViewBuilder};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone)]
 pub struct Element {
     id: u64,
+    document: Document,
 }
 
 impl Element {
-    pub const fn body() -> Self {
-        Self { id: 0 }
+    pub async fn append_child(&self, child: &Element) {
+        let (tx, rx) = oneshot::channel();
+        self.document
+            .tx
+            .send(Request::AppendChild {
+                parent_id: self.id,
+                child_id: child.id,
+                tx: Some(tx),
+            })
+            .unwrap();
+        rx.await.unwrap()
+    }
+
+    pub async fn set_text_content(&self, content: impl Into<Cow<'static, str>>) {
+        let (tx, rx) = oneshot::channel();
+        self.document
+            .tx
+            .send(Request::SetText {
+                id: self.id,
+                content: content.into(),
+                tx: Some(tx),
+            })
+            .unwrap();
+        rx.await.unwrap()
     }
 }
 
@@ -25,6 +48,7 @@ impl Element {
 enum Message {
     CreateNode { id: u64 },
     AppendChild,
+    SetText,
 }
 
 enum Request {
@@ -41,25 +65,25 @@ enum Request {
         content: Cow<'static, str>,
         tx: Option<oneshot::Sender<u64>>,
     },
+    SetText {
+        id: u64,
+        content: Cow<'static, str>,
+        tx: Option<oneshot::Sender<()>>,
+    },
 }
 
+#[derive(Clone)]
 pub struct Document {
     tx: mpsc::UnboundedSender<Request>,
 }
 
 impl Document {
-    pub async fn append_child(&self, parent: Element, child: Element) {
-        let (tx, rx) = oneshot::channel();
-        self.tx
-            .send(Request::AppendChild {
-                parent_id: parent.id,
-                child_id: child.id,
-                tx: Some(tx),
-            })
-            .unwrap();
-        rx.await.unwrap()
+    pub fn body(&self) -> Element {
+        Element {
+            id: 0,
+            document: self.clone(),
+        }
     }
-
     pub async fn create_element(&self, name: impl Into<Cow<'static, str>>) -> Element {
         let (tx, rx) = oneshot::channel();
         self.tx
@@ -69,7 +93,10 @@ impl Document {
             })
             .unwrap();
         let id = rx.await.unwrap();
-        Element { id }
+        Element {
+            id,
+            document: self.clone(),
+        }
     }
 
     pub async fn create_text_node(&self, content: impl Into<Cow<'static, str>>) -> Element {
@@ -81,7 +108,10 @@ impl Document {
             })
             .unwrap();
         let id = rx.await.unwrap();
-        Element { id }
+        Element {
+            id,
+            document: self.clone(),
+        }
     }
 }
 
@@ -90,10 +120,11 @@ pub struct HtmlView {
     rx: mpsc::UnboundedReceiver<Message>,
     req_rx: mpsc::UnboundedReceiver<Request>,
     pending: Option<Request>,
+    document: Document,
 }
 
 impl HtmlView {
-    pub fn new(window: &impl HasRawWindowHandle) -> wry::Result<(Document, Self)> {
+    pub fn new(window: &impl HasRawWindowHandle) -> wry::Result<Self> {
         let builder = WebViewBuilder::new(&window);
 
         let (tx, rx) = mpsc::unbounded_channel();
@@ -121,16 +152,19 @@ impl HtmlView {
             .unwrap();
 
         let (req_tx, req_rx) = mpsc::unbounded_channel();
+        let document = Document { tx: req_tx };
 
-        Ok((
-            Document { tx: req_tx },
-            Self {
-                web_view,
-                rx,
-                req_rx,
-                pending: None,
-            },
-        ))
+        Ok(Self {
+            web_view,
+            rx,
+            req_rx,
+            pending: None,
+            document,
+        })
+    }
+
+    pub fn document(&self) -> Document {
+        self.document.clone()
     }
 
     pub fn poll(&mut self) {
@@ -182,6 +216,24 @@ impl HtmlView {
                         return;
                     }
                 }
+                Request::SetText {
+                    id: _,
+                    content: _,
+                    tx,
+                } => {
+                    if let Ok(msg) = self.rx.try_recv() {
+                        match msg {
+                            Message::SetText => {
+                                tx.take().unwrap().send(()).unwrap();
+                            }
+                            _ => todo!(),
+                        }
+
+                        self.pending = None;
+                    } else {
+                        return;
+                    }
+                }
             }
         }
 
@@ -223,7 +275,7 @@ impl HtmlView {
                     self.web_view
                     .evaluate_script(&format!(
                         r#"
-                            let node = document.createTextNode("{content}");
+                            var node = document.createTextNode("{content}");
                             
                             var id = window.webSlinger.nextId;
                             window.webSlinger.nextId += 1;
@@ -233,6 +285,18 @@ impl HtmlView {
                         "#
                     ))
                     .unwrap();
+                }
+                Request::SetText { id, content, tx: _ } => {
+                    self.web_view
+                        .evaluate_script(&format!(
+                            r#"
+                            var node = window.webSlinger.elements[{id}];
+                            node.nodeValue = {content};
+
+                            window.ipc.postMessage(JSON.stringify({{ kind: "SetText" }}));
+                        "#
+                        ))
+                        .unwrap();
                 }
             }
             self.pending = Some(req);
