@@ -6,6 +6,7 @@ license = "MIT OR Apache-2.0"
 
 [features]
 full = ["dep:wry", "dep:winit"]
+default = ["full"]
 
 [dependencies]
 wry = { version = "0.35.0", optional = true }

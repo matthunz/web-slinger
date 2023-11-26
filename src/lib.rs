@@ -1,5 +1,11 @@
 use serde::Deserialize;
-use std::borrow::Cow;
+use std::{
+    borrow::Cow,
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc,
+    },
+};
 use tokio::sync::{mpsc, oneshot};
 use winit::{
     dpi::LogicalSize,
@@ -16,7 +22,7 @@ pub struct Element {
 }
 
 impl Element {
-    pub async fn append_child(&self, child: &Element) {
+    pub fn append_child(&self, child: &Element) -> oneshot::Receiver<()> {
         let (tx, rx) = oneshot::channel();
         self.document
             .tx
@@ -26,10 +32,10 @@ impl Element {
                 tx: Some(tx),
             })
             .unwrap();
-        rx.await.unwrap()
+        rx
     }
 
-    pub async fn set_text_content(&self, content: impl Into<Cow<'static, str>>) {
+    pub fn set_text_content(&self, content: impl Into<Cow<'static, str>>) -> oneshot::Receiver<()> {
         let (tx, rx) = oneshot::channel();
         self.document
             .tx
@@ -39,14 +45,14 @@ impl Element {
                 tx: Some(tx),
             })
             .unwrap();
-        rx.await.unwrap()
+        rx
     }
 }
 
 #[derive(Deserialize)]
 #[serde(tag = "kind", content = "data")]
 enum Message {
-    CreateNode { id: u64 },
+    CreateNode,
     AppendChild,
     SetText,
 }
@@ -58,12 +64,14 @@ enum Request {
         tx: Option<oneshot::Sender<()>>,
     },
     CreateElement {
+        id: u64,
         name: Cow<'static, str>,
-        tx: Option<oneshot::Sender<u64>>,
+        tx: Option<oneshot::Sender<()>>,
     },
     CreateTextElement {
+        id: u64,
         content: Cow<'static, str>,
-        tx: Option<oneshot::Sender<u64>>,
+        tx: Option<oneshot::Sender<()>>,
     },
     SetText {
         id: u64,
@@ -75,6 +83,7 @@ enum Request {
 #[derive(Clone)]
 pub struct Document {
     tx: mpsc::UnboundedSender<Request>,
+    next_id: Arc<AtomicU64>,
 }
 
 impl Document {
@@ -84,30 +93,34 @@ impl Document {
             document: self.clone(),
         }
     }
-    pub async fn create_element(&self, name: impl Into<Cow<'static, str>>) -> Element {
-        let (tx, rx) = oneshot::channel();
+    pub fn create_element(&self, name: impl Into<Cow<'static, str>>) -> Element {
+        let id = self.next_id.fetch_add(1, Ordering::SeqCst);
+        let (tx, _rx) = oneshot::channel();
         self.tx
             .send(Request::CreateElement {
+                id,
                 name: name.into(),
                 tx: Some(tx),
             })
             .unwrap();
-        let id = rx.await.unwrap();
+        //  let id = rx.await.unwrap();
         Element {
             id,
             document: self.clone(),
         }
     }
 
-    pub async fn create_text_node(&self, content: impl Into<Cow<'static, str>>) -> Element {
-        let (tx, rx) = oneshot::channel();
+    pub fn create_text(&self, content: impl Into<Cow<'static, str>>) -> Element {
+        let id = self.next_id.fetch_add(1, Ordering::SeqCst);
+        let (tx, _rx) = oneshot::channel();
         self.tx
             .send(Request::CreateTextElement {
+                id,
                 content: content.into(),
                 tx: Some(tx),
             })
             .unwrap();
-        let id = rx.await.unwrap();
+        //let id = rx.await.unwrap();
         Element {
             id,
             document: self.clone(),
@@ -152,7 +165,10 @@ impl HtmlView {
             .unwrap();
 
         let (req_tx, req_rx) = mpsc::unbounded_channel();
-        let document = Document { tx: req_tx };
+        let document = Document {
+            tx: req_tx,
+            next_id: Arc::new(AtomicU64::new(1)),
+        };
 
         Ok(Self {
             web_view,
@@ -188,11 +204,11 @@ impl HtmlView {
                         return;
                     }
                 }
-                Request::CreateElement { name: _, tx } => {
+                Request::CreateElement { name: _, tx, .. } => {
                     if let Ok(msg) = self.rx.try_recv() {
                         match msg {
-                            Message::CreateNode { id } => {
-                                tx.take().unwrap().send(id).unwrap();
+                            Message::CreateNode => {
+                                tx.take().unwrap().send(()).unwrap();
                             }
                             _ => todo!(),
                         }
@@ -202,11 +218,11 @@ impl HtmlView {
                         return;
                     }
                 }
-                Request::CreateTextElement { content: _, tx } => {
+                Request::CreateTextElement { content: _, tx, id: _ } => {
                     if let Ok(msg) = self.rx.try_recv() {
                         match msg {
-                            Message::CreateNode { id } => {
-                                tx.take().unwrap().send(id).unwrap();
+                            Message::CreateNode => {
+                                tx.take().unwrap().send(()).unwrap();
                             }
                             _ => todo!(),
                         }
@@ -256,35 +272,27 @@ impl HtmlView {
                         ))
                         .unwrap();
                 }
-                Request::CreateElement { name, tx: _ } => {
+                Request::CreateElement { name, tx: _, id } => {
                     self.web_view
-                    .evaluate_script(&format!(
-                        r#"
+                        .evaluate_script(&format!(
+                            r#"
                             let element = document.createElement("{name}");
-                            
-                            var id = window.webSlinger.nextId;
-                            window.webSlinger.nextId += 1;
-        
-                            window.webSlinger.elements[id] = element;
-                            window.ipc.postMessage(JSON.stringify({{ kind: "CreateNode", data: {{ id: id }} }}));
+                            window.webSlinger.elements[{id}] = element;
+                            window.ipc.postMessage(JSON.stringify({{ kind: "CreateNode" }}));
                         "#
-                    ))
-                    .unwrap();
+                        ))
+                        .unwrap();
                 }
-                Request::CreateTextElement { content, tx: _ } => {
+                Request::CreateTextElement { content, tx: _, id } => {
                     self.web_view
-                    .evaluate_script(&format!(
-                        r#"
+                        .evaluate_script(&format!(
+                            r#"
                             var node = document.createTextNode("{content}");
-                            
-                            var id = window.webSlinger.nextId;
-                            window.webSlinger.nextId += 1;
-        
-                            window.webSlinger.elements[id] = node;
-                            window.ipc.postMessage(JSON.stringify({{ kind: "CreateNode", data: {{ id: id }} }}));
+                            window.webSlinger.elements[{id}] = node;
+                            window.ipc.postMessage(JSON.stringify({{ kind: "CreateNode" }}));
                         "#
-                    ))
-                    .unwrap();
+                        ))
+                        .unwrap();
                 }
                 Request::SetText { id, content, tx: _ } => {
                     self.web_view
