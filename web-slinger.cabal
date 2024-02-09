@@ -1,0 +1,72 @@
+cabal-version: 2.2
+
+name:           web-slinger
+version:        0.1.0.0
+description:    Please see the README on GitHub at <https://github.com/githubuser/web-slinger#readme>
+homepage:       https://github.com/githubuser/web-slinger#readme
+bug-reports:    https://github.com/githubuser/web-slinger/issues
+author:         Author name here
+maintainer:     example@example.com
+copyright:      2024 Author name here
+license:        BSD-3-Clause
+license-file:   LICENSE
+build-type:     Custom
+extra-source-files:
+    README.md
+    CHANGELOG.md
+
+source-repository head
+  type: git
+  location: https://github.com/githubuser/web-slinger
+
+custom-setup
+    setup-depends:
+        base >=4 && <5,
+        directory >=1.3.7,
+        filepath >=1.4.2,
+        process >=1.6,
+        Cabal >=1.1
+
+
+library
+  exposed-modules:
+      Lib
+  other-modules:
+      Paths_web_slinger
+  autogen-modules:
+      Paths_web_slinger
+  hs-source-dirs:
+      src
+  ghc-options: -Wall -Wcompat -Widentities -Wincomplete-record-updates -Wincomplete-uni-patterns -Wmissing-export-lists -Wmissing-home-modules -Wpartial-fields -Wredundant-constraints
+  build-depends:
+      base >=4.7 && <5
+  default-language: Haskell2010
+
+executable web-slinger-exe
+  main-is: Main.hs
+  other-modules:
+      Paths_web_slinger
+  autogen-modules:
+      Paths_web_slinger
+  hs-source-dirs:
+      app
+  ghc-options: -Wall -Wcompat -Widentities -Wincomplete-record-updates -Wincomplete-uni-patterns -Wmissing-export-lists -Wmissing-home-modules -Wpartial-fields -Wredundant-constraints -threaded -rtsopts -with-rtsopts=-N
+  build-depends:
+      base >=4.7 && <5
+    , web-slinger
+  default-language: Haskell2010
+
+test-suite web-slinger-test
+  type: exitcode-stdio-1.0
+  main-is: Spec.hs
+  other-modules:
+      Paths_web_slinger
+  autogen-modules:
+      Paths_web_slinger
+  hs-source-dirs:
+      test
+  ghc-options: -Wall -Wcompat -Widentities -Wincomplete-record-updates -Wincomplete-uni-patterns -Wmissing-export-lists -Wmissing-home-modules -Wpartial-fields -Wredundant-constraints -threaded -rtsopts -with-rtsopts=-N
+  build-depends:
+      base >=4.7 && <5
+    , web-slinger
+  default-language: Haskell2010
